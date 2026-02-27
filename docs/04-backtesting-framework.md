@@ -48,9 +48,9 @@ On the **first trading day of each calendar month**, execute the following steps
 
 Apply all universe filters using only data available on the rebalance date:
 
-- Market cap between $300M and $2B (using prior close price x shares outstanding)
+- Market cap between $50M and $10B (using prior close price x shares outstanding)
 - Average daily dollar volume >= $1M over trailing 20 trading days
-- Stock price >= $5.00
+- Stock price >= $2.00
 - Listed on NYSE, NASDAQ, or AMEX
 - Exclude ADRs, REITs, SPACs, and financials (SIC/NAICS codes)
 - Include stocks that were later delisted (survivorship bias prevention)
@@ -61,7 +61,7 @@ Using ONLY data available on the rebalance date (see Section 4 for point-in-time
 
 | Factor | Weight | Calculation |
 |---|---|---|
-| RS Percentile | 40% | 12-month price return ranked vs. universe, percentile 0-100 |
+| RS Percentile | 40% | 6-month price return ranked vs. universe, percentile 0-100 |
 | EPS Growth | 20% | YoY quarterly EPS growth from most recent AVAILABLE quarter |
 | Revenue Growth | 20% | YoY quarterly revenue growth from most recent AVAILABLE quarter |
 | Price vs 52-Week High | 20% | Current price / 52-week high, scaled 0-100 |
@@ -270,27 +270,27 @@ def calc_yoy_eps_growth(ticker: str, rebalance_date: date) -> float:
 - Use **adjusted close prices** (split-adjusted and dividend-adjusted) from Sharadar SEP table
 - At rebalance date T, you may use closing prices through T (inclusive)
 - 52-week high: maximum adjusted close from T-252 trading days through T
-- 12-month return (RS): price at T / price at T-252 trading days
+- 6-month return (RS): price at T / price at T-126 trading days
 
 ```python
 def get_rs_percentile(ticker: str, rebalance_date: date, universe_tickers: list) -> float:
     """
     Calculate relative strength percentile within the universe.
-    12-month price return ranked against all other universe members.
+    6-month price return ranked against all other universe members.
     """
-    returns_252d = {}
+    returns_126d = {}
     for t in universe_tickers:
-        prices = get_prices(t, rebalance_date - timedelta(days=370), rebalance_date)
-        if len(prices) < 200:  # need ~252 trading days, allow some gaps
+        prices = get_prices(t, rebalance_date - timedelta(days=200), rebalance_date)
+        if len(prices) < 100:  # need ~126 trading days, allow some gaps
             continue
         ret = (prices[-1] / prices[0]) - 1
-        returns_252d[t] = ret
+        returns_126d[t] = ret
 
-    if ticker not in returns_252d:
+    if ticker not in returns_126d:
         return None
 
-    rank = sum(1 for r in returns_252d.values() if r < returns_252d[ticker])
-    percentile = (rank / len(returns_252d)) * 100
+    rank = sum(1 for r in returns_126d.values() if r < returns_126d[ticker])
+    percentile = (rank / len(returns_126d)) * 100
     return percentile
 ```
 
@@ -762,11 +762,11 @@ def get_all_prices(as_of_date: date, db) -> dict:
     Uses Sharadar SEP (daily prices) table.
     """
     rows = db.execute("""
-        SELECT ticker, close_adj
+        SELECT ticker, close
         FROM sep
         WHERE date = ?
     """, [as_of_date]).fetchall()
-    return {row['ticker']: row['close_adj'] for row in rows}
+    return {row['ticker']: row['close'] for row in rows}
 
 
 def get_prices(ticker: str, start: date, end: date, db=None) -> list:
@@ -775,13 +775,13 @@ def get_prices(ticker: str, start: date, end: date, db=None) -> list:
     Returns list of floats in chronological order.
     """
     rows = db.execute("""
-        SELECT close_adj
+        SELECT close
         FROM sep
         WHERE ticker = ?
           AND date BETWEEN ? AND ?
         ORDER BY date ASC
     """, [ticker, start, end]).fetchall()
-    return [row['close_adj'] for row in rows]
+    return [row['close'] for row in rows]
 
 
 def calc_yoy_rev_growth(ticker: str, rebalance_date: date) -> float:
@@ -1698,7 +1698,7 @@ def load_benchmark(ticker: str, start: date, end: date, db) -> pd.Series:
     Uses the same date range and starting capital as the strategy.
     """
     prices = db.execute("""
-        SELECT date, close_adj
+        SELECT date, close
         FROM sep
         WHERE ticker = ?
           AND date BETWEEN ? AND ?

@@ -224,7 +224,7 @@ def calculate_relative_strength(
 | **Dividends** | Sharadar SEP `close` is split-adjusted but *not* dividend-adjusted by default. For a pure price-momentum signal this is acceptable --- Jegadeesh & Titman's original formulation uses price returns, not total returns. If you want total returns, use `closeadj` if available or adjust manually. |
 | **Delistings / survivorship bias** | Stocks that delist between the lookback date and scoring date will not have a current price and are automatically excluded. For backtesting, ensure the universe is reconstructed point-in-time (Section 7). |
 | **Ties** | `rank(method="average")` assigns the mean rank to tied stocks. For a universe of 3,000+ stocks, ties are rare and this choice has negligible impact. |
-| **Very low-priced stocks** | These can have extreme percentage returns. The universe filter (applied upstream) should exclude sub-$5 stocks. The percentile ranking is also inherently robust to outliers since it compresses returns to a 0--100 scale. |
+| **Very low-priced stocks** | These can have extreme percentage returns. The universe filter (applied upstream) should exclude sub-$2 stocks. The percentile ranking is also inherently robust to outliers since it compresses returns to a 0--100 scale. |
 
 ### Academic Basis
 
@@ -1153,7 +1153,7 @@ sharadar.sf1    -- Quarterly/annual fundamentals
 
 ```
 1. Determine scoring_date (last trading day of month)
-2. Build universe: all tickers with close price on scoring_date, close > $5
+2. Build universe: all tickers with close price on scoring_date, close > $2
 3. Compute Factor 1: RS Percentile (126-day momentum, ranked)
 4. Compute Factor 2: EPS Growth YoY (capped at 100)
 5. Compute Factor 3: Revenue Growth YoY (capped at 100)

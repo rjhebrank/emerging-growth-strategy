@@ -198,7 +198,7 @@ If SELL proceeds do not cover all BUY allocations, see Section 12 ("What if you 
 
 - For each HOLD position, calculate current weight: `position_value / total_portfolio_value`.
 - If weight > 6%: trim to 4% (see Section 5, Winner Trimming).
-- If weight < 3.5%: consider adding to bring closer to 4% (if cash available).
+- If weight < 2%: consider adding to bring closer to 4% (if cash available).
 - **Minimum trade threshold:** Do not rebalance if drift is less than 0.5% (saves transaction costs). A position at 3.7% or 4.3% is close enough.
 - Net rebalancing orders where possible. If trimming Stock A generates $500 and Stock B needs $500 added, execute both.
 - Record: ticker, action (TRIM/ADD), shares, execution price, new weight.
@@ -832,7 +832,7 @@ Step 3 — REBALANCE (Day 2-3):
 [ ] Check all HOLD positions for weight drift
 [ ] Trim positions above 6% weight
     Stocks trimmed: ____________________________________________
-[ ] Add to positions below 3.5% weight (if cash available)
+[ ] Add to positions below 2% weight (if cash available)
     Stocks added to: ____________________________________________
 [ ] Positions skipped (drift < 0.5%): ____
 

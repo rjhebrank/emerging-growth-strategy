@@ -25,6 +25,9 @@ Rank descending by composite score
 Select Top 25
     │
     ▼
+Enforce sector cap (max 40% per sector)
+    │
+    ▼
 Compare to prior month's holdings
     │
     ▼
@@ -322,7 +325,8 @@ Note: EPS growth of 150% is capped at 100. Without capping, BBBB's score would b
 
 1. Sort all filtered stocks by `composite_score` descending.
 2. Select the top 25 rows.
-3. Assign equal weight: each position = 4% of portfolio (1/25 = 0.04).
+3. **Enforce sector concentration cap:** No single sector may exceed 40% of positions (more than 10 of 25 stocks). If any sector is over-concentrated, drop the lowest-scoring stock in that sector and replace with the next highest-scoring stock from a different sector. Repeat until all sectors are at or below 40%. See `enforce_sector_cap` below.
+4. Assign equal weight: each position = 4% of portfolio (1/25 = 0.04).
 
 ### Tiebreaking
 
@@ -374,7 +378,131 @@ def select_top_n(
         )
 
     return top_n
+
+
+def enforce_sector_cap(
+    selected_df: pd.DataFrame,
+    remaining_df: pd.DataFrame,
+    max_sector_pct: float = 0.40,
+) -> pd.DataFrame:
+    """
+    Enforce a maximum sector concentration limit on the selected portfolio.
+
+    After selecting the top N stocks by composite score, this function checks
+    whether any single GICS sector exceeds `max_sector_pct` of total positions.
+    If so, it iteratively drops the lowest-scoring stock in the over-concentrated
+    sector and replaces it with the next highest-scoring stock from a different
+    sector drawn from `remaining_df`.
+
+    Parameters
+    ----------
+    selected_df : pd.DataFrame
+        The top N stocks (output of select_top_n). Must contain:
+        - 'ticker': str
+        - 'sector': str (GICS sector name)
+        - 'composite_score': float
+    remaining_df : pd.DataFrame
+        All scored stocks that were NOT selected (i.e., ranked below the top N).
+        Same required columns as selected_df, sorted by composite_score descending.
+    max_sector_pct : float
+        Maximum fraction of positions allowed in any single sector.
+        Default 0.40 (40%). For a 25-stock portfolio this means no more
+        than 10 stocks from one sector.
+
+    Returns
+    -------
+    pd.DataFrame
+        Adjusted selection with sector caps enforced. The 'rank' and
+        'target_weight' columns are recalculated after replacements.
+    """
+    n = len(selected_df)
+    max_sector_count = int(max_sector_pct * n)  # e.g., 10 for 25 stocks at 40%
+
+    selected = selected_df.copy()
+    remaining = remaining_df.copy()
+
+    replacements_made = 0
+
+    while True:
+        # Count stocks per sector in current selection
+        sector_counts = selected['sector'].value_counts()
+        over_limit = sector_counts[sector_counts > max_sector_count]
+
+        if over_limit.empty:
+            break  # All sectors within cap
+
+        for sector_name, count in over_limit.items():
+            excess = count - max_sector_count
+            logger.info(
+                f"Sector cap: {sector_name} has {count} stocks "
+                f"(max {max_sector_count}), removing {excess}"
+            )
+
+            # Find the lowest-scoring stocks in this sector within the selection
+            sector_mask = selected['sector'] == sector_name
+            sector_stocks = selected[sector_mask].sort_values(
+                'composite_score', ascending=True
+            )
+
+            # Drop the lowest-scoring ones (one at a time, replacing each)
+            for i in range(excess):
+                drop_ticker = sector_stocks.iloc[i]['ticker']
+
+                # Find the best replacement from a DIFFERENT sector
+                replacement_mask = remaining['sector'] != sector_name
+                eligible = remaining[replacement_mask]
+
+                if eligible.empty:
+                    logger.warning(
+                        f"Sector cap: No replacement candidates from other sectors. "
+                        f"Stopping with {sector_name} still over limit."
+                    )
+                    break
+
+                # Take the top eligible replacement
+                replacement_row = eligible.iloc[[0]]
+
+                # Remove the dropped stock from selected
+                selected = selected[selected['ticker'] != drop_ticker]
+                # Add the replacement
+                selected = pd.concat([selected, replacement_row], ignore_index=True)
+                # Remove the replacement from the remaining pool
+                remaining = remaining[
+                    remaining['ticker'] != replacement_row.iloc[0]['ticker']
+                ]
+                replacements_made += 1
+
+                logger.info(
+                    f"  Replaced {drop_ticker} (score="
+                    f"{sector_stocks.iloc[i]['composite_score']:.2f}) with "
+                    f"{replacement_row.iloc[0]['ticker']} (score="
+                    f"{replacement_row.iloc[0]['composite_score']:.2f}, "
+                    f"sector={replacement_row.iloc[0]['sector']})"
+                )
+
+    # Re-sort and re-rank after replacements
+    selected = selected.sort_values(
+        by=['composite_score', 'rs_percentile', 'ticker'],
+        ascending=[False, False, True],
+    ).reset_index(drop=True)
+    selected['rank'] = range(1, len(selected) + 1)
+    selected['target_weight'] = 1.0 / n
+
+    if replacements_made > 0:
+        logger.info(f"Sector cap enforcement: {replacements_made} replacement(s) made")
+    else:
+        logger.info("Sector cap enforcement: no adjustments needed")
+
+    return selected
 ```
+
+### Sector Cap Rule
+
+The 40% maximum sector concentration limit (defined in doc 05) is enforced at this stage. After selecting the initial top 25, if any single GICS sector contains more than 10 stocks (40% of 25), the lowest-scoring stocks in that sector are dropped and replaced with the next-highest-scoring stocks from different sectors.
+
+**Why enforce it here (not in quality filtering)?** The sector cap is a portfolio construction constraint, not a stock quality issue. A stock from an over-represented sector may be individually excellent but creates concentration risk when combined with many peers. By applying the cap after scoring and selection, we preserve the integrity of the composite score ranking and make the minimum number of swaps necessary.
+
+**Integration with the pipeline:** `enforce_sector_cap` is called immediately after `select_top_n`, receiving the top 25 and the remaining scored candidates (ranks 26+). See the `EmergingGrowthSelector.run()` method below for the integration point.
 
 ### Output Format: Ranking Table
 
@@ -975,6 +1103,102 @@ class EmergingGrowthSelector:
 
         return top, first_excluded_ticker, first_excluded_score
 
+    # ----- Step 3b: Enforce Sector Cap ----- #
+
+    def enforce_sector_cap(
+        self,
+        selected_df: pd.DataFrame,
+        remaining_df: pd.DataFrame,
+        max_sector_pct: float = 0.40,
+    ) -> pd.DataFrame:
+        """
+        Enforce maximum sector concentration on the selected portfolio.
+
+        If any GICS sector exceeds max_sector_pct of positions, iteratively
+        drop the lowest-scoring stock in that sector and replace with the
+        next highest-scoring stock from a different sector.
+
+        Parameters
+        ----------
+        selected_df : pd.DataFrame
+            The top N stocks (output of select_top_n).
+        remaining_df : pd.DataFrame
+            Scored stocks not selected (ranks N+1 onward), sorted by
+            composite_score descending.
+        max_sector_pct : float
+            Maximum fraction of positions in any single sector (default 0.40).
+
+        Returns
+        -------
+        pd.DataFrame
+            Adjusted selection with sector caps enforced, re-ranked.
+        """
+        n = len(selected_df)
+        max_sector_count = int(max_sector_pct * n)
+
+        selected = selected_df.copy()
+        remaining = remaining_df.copy()
+        replacements_made = 0
+
+        while True:
+            sector_counts = selected['sector'].value_counts()
+            over_limit = sector_counts[sector_counts > max_sector_count]
+
+            if over_limit.empty:
+                break
+
+            for sector_name, count in over_limit.items():
+                excess = count - max_sector_count
+                logger.info(
+                    f"Sector cap: {sector_name} has {count} stocks "
+                    f"(max {max_sector_count}), removing {excess}"
+                )
+
+                sector_stocks = selected[selected['sector'] == sector_name].sort_values(
+                    'composite_score', ascending=True
+                )
+
+                for i in range(excess):
+                    drop_ticker = sector_stocks.iloc[i]['ticker']
+                    eligible = remaining[remaining['sector'] != sector_name]
+
+                    if eligible.empty:
+                        logger.warning(
+                            f"Sector cap: No replacement candidates from other sectors."
+                        )
+                        break
+
+                    replacement_row = eligible.iloc[[0]]
+                    selected = selected[selected['ticker'] != drop_ticker]
+                    selected = pd.concat([selected, replacement_row], ignore_index=True)
+                    remaining = remaining[
+                        remaining['ticker'] != replacement_row.iloc[0]['ticker']
+                    ]
+                    replacements_made += 1
+
+                    logger.info(
+                        f"  Replaced {drop_ticker} "
+                        f"(score={sector_stocks.iloc[i]['composite_score']:.2f}) with "
+                        f"{replacement_row.iloc[0]['ticker']} "
+                        f"(score={replacement_row.iloc[0]['composite_score']:.2f}, "
+                        f"sector={replacement_row.iloc[0]['sector']})"
+                    )
+
+        # Re-sort and re-rank
+        selected = selected.sort_values(
+            by=['composite_score', 'rs_percentile', 'ticker'],
+            ascending=[False, False, True],
+        ).reset_index(drop=True)
+        selected['rank'] = range(1, len(selected) + 1)
+        selected['target_weight'] = 1.0 / n
+
+        if replacements_made > 0:
+            logger.info(f"Sector cap enforcement: {replacements_made} replacement(s) made")
+        else:
+            logger.info("Sector cap enforcement: no adjustments needed")
+
+        return selected
+
     # ----- Step 4: Generate Signals ----- #
 
     def generate_signals(
@@ -1070,6 +1294,10 @@ class EmergingGrowthSelector:
 
         # Step 3: Select top N
         top25, excl_ticker, excl_score = self.select_top_n(scored)
+
+        # Step 3b: Enforce sector concentration cap (max 40% per sector)
+        remaining = scored.iloc[self.top_n:].copy()
+        top25 = self.enforce_sector_cap(top25, remaining)
 
         # Step 4: Generate signals
         signals = self.generate_signals(top25, prior_holdings)
