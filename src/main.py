@@ -34,14 +34,14 @@ def cmd_mock(args):
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    result = generate_mock_data(output_path)
+    result = generate_mock_data(output_path, n_tickers=args.tickers)
     print(f"Mock data generated: {result}")
 
 
 def cmd_run(args):
     """Run the full monthly pipeline."""
     from src.data_loader import load_universe, load_price_history, load_fundamentals
-    from src.screener import screen_universe
+    from src.screener import screen_universe, screening_summary
     from src.factors import calculate_all_factors
     from src.scoring import (
         apply_quality_filters, calc_composite_score, select_top_n,
@@ -68,6 +68,7 @@ def cmd_run(args):
     # Step 2: Screen universe
     print("Step 2/7: Screening universe...")
     screened = screen_universe(universe)
+    screen_stats = screening_summary(universe, screened)
     qualifying_tickers = screened['ticker'].tolist()
     print(f"  {len(qualifying_tickers)} tickers pass all filters")
 
@@ -85,11 +86,14 @@ def cmd_run(args):
     print("Step 5/7: Scoring and ranking...")
     scored = calc_composite_score(qualified)
     top25 = select_top_n(scored, n=25)
-    print(
-        f"  Top 25 selected (score range: "
-        f"{top25['composite_score'].min():.1f} - "
-        f"{top25['composite_score'].max():.1f})"
-    )
+    if top25.empty:
+        print("  WARNING: No stocks passed all quality gates. Report will be empty.")
+    else:
+        print(
+            f"  Top {len(top25)} selected (score range: "
+            f"{top25['composite_score'].min():.1f} - "
+            f"{top25['composite_score'].max():.1f})"
+        )
 
     # Step 6: Generate signals
     print("Step 6/7: Generating signals...")
@@ -109,7 +113,7 @@ def cmd_run(args):
 
     # Step 7: Output
     print("Step 7/7: Generating report...")
-    report = format_report(signals)
+    report = format_report(signals, screening_stats=screen_stats)
     print("\n" + report)
 
     # Save outputs

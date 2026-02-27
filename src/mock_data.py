@@ -128,12 +128,33 @@ def _write_price_history_sheet(
     ticker_profiles: list[dict],
     rng: np.random.Generator,
 ):
-    """Write the Price History sheet in block layout (320 rows per ticker)."""
+    """Write the Price History sheet in block layout (320 rows per ticker).
+
+    Matches the Bloomberg template structure:
+      Row 1: Instructions text
+      Row 2: Column headers (Ticker, Date, Open, High, Low, Close, Volume)
+      Row 3+: Data blocks, 320 rows each
+    """
     # Generate a date index: 315 trading days ending ~today
     end_date = pd.Timestamp("2026-02-20")
     dates = pd.bdate_range(end=end_date, periods=_PRICE_DAYS)
 
     current_row = 1  # openpyxl is 1-indexed
+
+    # Row 1: Instructions (matches Bloomberg template)
+    ws.cell(row=current_row, column=1, value=(
+        "INSTRUCTIONS: Paste qualifying tickers into column I (Ticker Input). "
+        "BDH formulas auto-populate OHLCV data. Each ticker block = 320 rows."
+    ))
+    current_row += 1
+
+    # Row 2: Column headers
+    for col_idx, header in enumerate(
+        ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume"],
+        start=1,
+    ):
+        ws.cell(row=current_row, column=col_idx, value=header)
+    current_row += 1
 
     for tk, prof in zip(tickers, ticker_profiles):
         block_start = current_row
@@ -190,11 +211,25 @@ def _write_fundamentals_sheet(
     ticker_profiles: list[dict],
     rng: np.random.Generator,
 ):
-    """Write the Fundamentals sheet in block layout (10 rows per ticker)."""
+    """Write the Fundamentals sheet in block layout (10 rows per ticker).
+
+    Matches the Bloomberg template structure:
+      Row 1: Column headers (Ticker, EPS Date, EPS, ..., Rev Date, Revenue)
+      Row 2+: Data blocks, 10 rows each
+      EPS in columns B-C, Revenue in columns J-K (matching Bloomberg layout)
+    """
     # 8 quarter-end dates going back 2 years
     quarter_dates = pd.date_range(end="2025-12-31", periods=_FUND_QUARTERS, freq="QE")
 
     current_row = 1
+
+    # Row 1: Column headers (matches Bloomberg template)
+    ws.cell(row=current_row, column=1, value="Ticker")
+    ws.cell(row=current_row, column=2, value="EPS Date")
+    ws.cell(row=current_row, column=3, value="EPS")
+    ws.cell(row=current_row, column=10, value="Rev Date")   # column J
+    ws.cell(row=current_row, column=11, value="Revenue")     # column K
+    current_row += 1
 
     for tk, prof in zip(tickers, ticker_profiles):
         # Row 1 of block: ticker in column A
@@ -242,9 +277,9 @@ def _write_fundamentals_sheet(
             ws.cell(row=current_row, column=2, value=dt_str)
             ws.cell(row=current_row, column=3, value=eps_values[q])
 
-            # Revenue: columns E-F (skip column D)
-            ws.cell(row=current_row, column=5, value=dt_str)
-            ws.cell(row=current_row, column=6, value=rev_val)
+            # Revenue: columns J-K (matching Bloomberg template layout)
+            ws.cell(row=current_row, column=10, value=dt_str)
+            ws.cell(row=current_row, column=11, value=rev_val)
 
             current_row += 1
 
@@ -484,8 +519,8 @@ def generate_mock_data(
     logger.info("Writing fundamentals...")
     _write_fundamentals_sheet(ws_fund, tickers, profiles, rng)
 
-    # Sheet 4: Scores (empty - computed by engine)
-    wb.create_sheet("Scores")
+    # Sheet 4: Factor Scores (empty - computed by engine)
+    wb.create_sheet("Factor Scores")
 
     # Sheet 5: Portfolio (empty - computed by engine)
     wb.create_sheet("Portfolio")

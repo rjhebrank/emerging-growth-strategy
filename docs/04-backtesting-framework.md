@@ -49,10 +49,9 @@ On the **first trading day of each calendar month**, execute the following steps
 Apply all universe filters using only data available on the rebalance date:
 
 - Market cap between $50M and $10B (using prior close price x shares outstanding)
-- Average daily dollar volume >= $1M over trailing 20 trading days
+- Average daily dollar volume >= $500K over trailing 20 trading days
 - Stock price >= $2.00
-- Listed on NYSE, NASDAQ, or AMEX
-- Exclude ADRs, REITs, SPACs, and financials (SIC/NAICS codes)
+- Listed on NASDAQ, NYSE, or NYSE American
 - Include stocks that were later delisted (survivorship bias prevention)
 
 #### Step 2: Compute the 4-Factor Composite Score
@@ -146,7 +145,7 @@ def execute_sell(price: float, shares: int) -> float:
 ### What the 10 bps Covers
 
 - **Bid-ask spread impact:** Small-cap stocks typically have 5-20 bps effective spreads. The 10 bps assumption is moderate.
-- **Market impact:** For $4,000 position sizes ($100K / 25), market impact on stocks with >$1M daily volume is negligible.
+- **Market impact:** For $4,000 position sizes ($100K / 25), market impact on stocks with >$500K daily dollar volume is negligible.
 - **ECN/exchange fees:** Typically 0.3 bps or less -- included in the 10 bps.
 
 ### What Is NOT Modeled (and Why)
@@ -317,8 +316,8 @@ def get_active_universe(rebalance_date: date) -> list:
         FROM tickers
         WHERE firstpricedate <= ?
           AND (lastpricedate >= ? OR isdelisted = 'N')
-          AND exchange IN ('NYSE', 'NASDAQ', 'NYSEMKT')
-          AND category = 'Domestic Common Stock'
+          AND exchange IN ('NASDAQ', 'NYSE', 'NYSEAMERICAN', 'NYSEMKT')
+          AND category = 'Domestic'
     """, [rebalance_date, rebalance_date]).fetchall()
 ```
 

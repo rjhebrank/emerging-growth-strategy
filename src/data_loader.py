@@ -6,7 +6,13 @@ Handles Bloomberg quirks: #N/A strings, empty cells, inconsistent formatting.
 Sheet structure:
   1. Universe   - ticker list with market cap, exchange, volume, price
   2. Price History - block layout, 320-row spacing, 315 days OHLCV per ticker
+     * Row 1: instructions text (skipped)
+     * Row 2: column headers (skipped)
+     * Row 3+: data blocks, 320 rows each
   3. Fundamentals  - block layout, 10-row spacing, 8 quarters EPS + revenue
+     * Row 1: column headers (skipped)
+     * Row 2+: data blocks, 10 rows each
+     * EPS in columns B-C, Revenue in columns J-K
   4-5. (computed by engine, not read here)
 """
 
@@ -99,7 +105,10 @@ def load_price_history(filepath: str | Path) -> dict[str, pd.DataFrame]:
 
     Block parsing logic:
     - Reads all rows from the sheet (no header)
-    - Blocks are 320 rows apart (row 0, 320, 640, ...)
+    - Detects and skips leading non-block rows (instructions, headers)
+      by scanning for the first row where column A looks like a ticker
+      (not a known header/instruction string)
+    - Blocks are 320 rows apart starting from the first ticker row
     - First row of each block has the ticker in column A
     - Rows 1-315 (approx) have price data in columns B-G
     - Parses dates from column B
@@ -119,8 +128,36 @@ def load_price_history(filepath: str | Path) -> dict[str, pd.DataFrame]:
     )
 
     n_rows = len(raw)
+
+    # Detect leading rows to skip (instructions row, header row).
+    # The Bloomberg template has an instructions row in A1 and headers in A2
+    # ("Ticker", "Date", etc.).  Mock data may have the same or start directly
+    # with ticker blocks.  We scan forward until column A looks like a real
+    # ticker (not a header keyword or instruction text).
+    _SKIP_STRINGS = {
+        "ticker", "date", "open", "high", "low", "close", "volume",
+        "instructions", "instructions:",
+    }
+    skip_rows = 0
+    for i in range(min(10, n_rows)):  # check at most first 10 rows
+        val = raw.iloc[i, 0]
+        if pd.isna(val) or str(val).strip() == "":
+            skip_rows = i + 1
+            continue
+        val_str = str(val).strip().lower()
+        # Skip if it starts with "instructions" or matches a known header word
+        if val_str.startswith("instructions") or val_str in _SKIP_STRINGS:
+            skip_rows = i + 1
+            continue
+        break  # Found a real ticker row
+
+    if skip_rows > 0:
+        logger.info("Price history: skipping %d leading row(s) (headers/instructions)", skip_rows)
+        raw = raw.iloc[skip_rows:].reset_index(drop=True)
+        n_rows = len(raw)
+
     n_blocks = (n_rows + _PRICE_BLOCK_SIZE - 1) // _PRICE_BLOCK_SIZE
-    logger.info("Price history sheet: %d rows, up to %d blocks", n_rows, n_blocks)
+    logger.info("Price history sheet: %d data rows, up to %d blocks", n_rows, n_blocks)
 
     result: dict[str, pd.DataFrame] = {}
 
@@ -189,11 +226,14 @@ def load_fundamentals(filepath: str | Path) -> dict[str, dict]:
     }
 
     Block parsing logic:
-    - Blocks are 10 rows apart (row 0, 10, 20, ...)
+    - Detects and skips a leading header row (column A == "Ticker")
+    - Blocks are 10 rows apart (row 0, 10, 20, ... after skip)
     - First row of each block has the ticker in column A
     - Rows 1-8 have quarterly data
     - EPS in columns B-C (date, eps value)
-    - Revenue in columns E-F (date, revenue value)
+    - Revenue location is auto-detected:
+        * Bloomberg template: columns J-K (indices 9-10)
+        * Legacy / mock (fallback): columns E-F (indices 4-5)
     - Parses dates, converts values to numeric
     - Handles #N/A, missing quarters
     """
@@ -209,8 +249,41 @@ def load_fundamentals(filepath: str | Path) -> dict[str, dict]:
     )
 
     n_rows = len(raw)
+
+    # Detect and skip header row.  The Bloomberg template has headers in row 1
+    # ("Ticker", "EPS Date", "EPS", ..., "Rev Date", "Revenue", ...).
+    # Mock data may or may not have a header row.
+    skip_rows = 0
+    if n_rows > 0:
+        first_val = raw.iloc[0, 0]
+        if not pd.isna(first_val) and str(first_val).strip().lower() == "ticker":
+            skip_rows = 1
+            logger.info("Fundamentals: skipping 1 header row")
+
+    if skip_rows > 0:
+        raw = raw.iloc[skip_rows:].reset_index(drop=True)
+        n_rows = len(raw)
+
+    # Auto-detect revenue column position.
+    # Bloomberg template: Rev Date in col J (idx 9), Revenue in col K (idx 10).
+    # Legacy mock data: Rev Date in col E (idx 4), Revenue in col F (idx 5).
+    # We check if columns J-K exist and have data; otherwise fall back to E-F.
+    _rev_date_idx = 4  # default: column E (legacy)
+    _rev_val_idx = 5   # default: column F (legacy)
+    if raw.shape[1] >= 11:
+        # Check if column J (idx 9) has any non-null date-like data
+        sample = raw.iloc[:, 9].dropna()
+        if len(sample) > 0:
+            _rev_date_idx = 9   # column J
+            _rev_val_idx = 10   # column K
+            logger.info("Fundamentals: revenue detected in columns J-K (Bloomberg layout)")
+        else:
+            logger.info("Fundamentals: revenue in columns E-F (legacy layout)")
+    else:
+        logger.info("Fundamentals: revenue in columns E-F (sheet has <%d columns)", raw.shape[1])
+
     n_blocks = (n_rows + _FUND_BLOCK_SIZE - 1) // _FUND_BLOCK_SIZE
-    logger.info("Fundamentals sheet: %d rows, up to %d blocks", n_rows, n_blocks)
+    logger.info("Fundamentals sheet: %d data rows, up to %d blocks", n_rows, n_blocks)
 
     result: dict[str, dict] = {}
 
@@ -240,10 +313,9 @@ def load_fundamentals(filepath: str | Path) -> dict[str, dict]:
         eps_df = eps_df.dropna(subset=["date"])
         eps_df = eps_df.reset_index(drop=True)
 
-        # --- Revenue: columns E (idx 4) and F (idx 5) ---
-        # Guard against sheets with fewer than 6 columns
-        if raw.shape[1] >= 6:
-            rev_df = block.iloc[:, 4:6].copy()
+        # --- Revenue: columns at detected positions ---
+        if raw.shape[1] > _rev_val_idx:
+            rev_df = block.iloc[:, [_rev_date_idx, _rev_val_idx]].copy()
             rev_df.columns = ["date", "revenue"]
             rev_df = rev_df.replace(_BLOOMBERG_NA_VALUES, np.nan)
             rev_df = rev_df.dropna(how="all")

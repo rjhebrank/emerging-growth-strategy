@@ -11,7 +11,6 @@ Each function is independently testable and returns a pd.Series indexed by ticke
 """
 
 import logging
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -270,19 +269,14 @@ def _compute_revenue_growth(current: float, prior: float) -> float:
     """Compute revenue growth handling edge cases around zero and negative.
 
     Rules:
-        - prior <= 0 and current > 0: turnaround -> 999.0
-        - prior <= 0 (any other case): NaN (can't compute meaningful growth)
-        - Normal: (current - prior) / prior * 100
+        - prior <= 0: NaN (positive revenue base required per strategy spec)
+        - Normal (prior > 0): (current - prior) / prior * 100
     """
     # Handle NaN inputs
     if np.isnan(current) or np.isnan(prior):
         return np.nan
 
-    # Turnaround: non-positive prior, positive current
-    if prior <= 0.0 and current > 0.0:
-        return TURNAROUND_GROWTH
-
-    # Non-positive prior with non-positive current -- meaningless
+    # Non-positive prior: strategy requires positive revenue base
     if prior <= 0.0:
         return np.nan
 

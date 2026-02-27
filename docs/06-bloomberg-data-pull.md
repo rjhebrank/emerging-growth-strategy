@@ -403,15 +403,19 @@ Each BDH spills 2 columns (Date, Value) and up to 8 rows. Leave columns B--I for
 
 Assuming most recent quarter EPS is in cell C1 and same-quarter-last-year EPS is in cell C5:
 ```
-=IF(C5=0,IF(C1>0,999,0),(C1-C5)/ABS(C5)*100)
+=IF(C5<=0,IF(C1>0,999,IF(C1=0,0,"")),(C1-C5)/ABS(C5)*100)
 ```
+
+Turnaround scoring: if prior EPS is zero or negative and current EPS is positive, assigns 999% (sentinel value that gets capped to 100 in composite scoring). If both are non-positive, returns 0 or blank.
 
 **Revenue YoY Growth** (paste in column S):
 
 Assuming most recent quarter revenue is in cell K1 and same-quarter-last-year revenue is in cell K5:
 ```
-=IF(K5<=0,IF(K1>0,999,0),(K1-K5)/K5*100)
+=IF(K5<=0,"",(K1-K5)/K5*100)
 ```
+
+Note: Unlike EPS, revenue does NOT get turnaround scoring (999). If prior-period revenue is zero or negative, the cell is left blank (excluded). Pre-revenue companies are outside the strategy's scope per the specification.
 
 ---
 

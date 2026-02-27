@@ -113,8 +113,8 @@ def calc_rebalance_trades(
             None if this is the first month.
         target_portfolio: From build_portfolio(). Must contain:
             ticker, target_shares, price.
-        signals: DataFrame with at least 'ticker' and 'action' columns,
-            where action is one of 'BUY', 'SELL', 'HOLD'.
+        signals: DataFrame with at least 'ticker' and 'signal' columns,
+            where signal is one of 'BUY', 'SELL', 'HOLD'.
 
     Returns:
         DataFrame with columns:
@@ -136,7 +136,7 @@ def calc_rebalance_trades(
 
     for _, sig in signals.iterrows():
         ticker = sig["ticker"]
-        action = sig["action"]
+        action = sig["signal"]
 
         if action == "SELL":
             # Sell entire position
